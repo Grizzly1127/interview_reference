@@ -2,8 +2,13 @@
 
 - [Redis 的缓存穿透，缓存击穿和雪崩和解决方法](#1)
 - [Redis 的高可用方案](#2)
+- [Redis 的数据类型及底层实现](#3)
+- [Redis 的 ZSet 为什么用跳跃表不用红黑树](#4)
+- [Redis 的持久化方式及区别](#5)
+- [Redis 是多线程还是单线程架构](#6)
+- [Redis 为什么这么快](#7)
 
-<h3 id="1">Redis的缓存穿透，缓存击穿和雪崩和解决方法</h3>
+<h3 id="1">Redis 的缓存穿透，缓存击穿和雪崩和解决方法</h3>
 
 ---
 
@@ -30,7 +35,7 @@
 3. 不同的 key,可以设置不同的过期时间，让缓存失效的时间点不一致，尽量达到平均分布。
 4. 永远不过期。redis 中设置永久不过期，这样就保证了，不会出现热点问题，也就是物理上不过期。
 
-<h3 id="2">Redis的高可用方案</h3>
+<h3 id="2">Redis 的高可用方案</h3>
 
 ---
 
@@ -94,3 +99,86 @@
    - 避免产生 big-key，导致网卡撑爆、慢查询等。
    - 重试时间应该大于 cluster-node-time 时间。
    - Redis Cluster 不建议使用 pipeline 和 multi-keys 操作，减少 max redirect 产生的场景。
+
+<h3 id="3">Redis 的数据类型及底层实现</h3>
+
+---
+
+| 类型   | 底层编码实现                                            |
+| ------ | ------------------------------------------------------- |
+| String | OBJ_ENCODING_RAW, OBJ_ENCODING_INT, OBJ_ENCODING_EMBSTR |
+| List   | OBJ_ENCODING_QUICKLIST                                  |
+| Set    | OBJ_ENCODING_INTSET ,OBJ_ENCODING_HT                    |
+| ZSet   | OBJ_ENCODING_ZIPLIST ,OBJ_ENCODING_SKIPLIST             |
+| Hash   | OBJ_ENCODING_ZIPLIST ,OBJ_ENCODING_HT                   |
+
+编码解释：
+
+- OBJ_ENCODING_RAW：SDS，Redis 实现的简单动态字符串。
+- OBJ_ENCODING_INT：int 整型。
+- OBJ_ENCODING_EMBSTR：SDS。
+- OBJ_ENCODING_QUICKLIST：快速列表，由 adlist（双端链表）与 ziplist（压缩列表）构成。
+- OBJ_ENCODING_INTSET：整数集合。
+- OBJ_ENCODING_HT：哈希表。
+- OBJ_ENCODING_ZIPLIST：压缩列表。
+- OBJ_ENCODING_SKIPLIST：跳跃表。
+
+使用何种编码选择：
+
+- String：当数据长度小与 44 时，用 OBJ_ENCODING_EMBSTR 编码，否则使用 OBJ_ENCODING_RAW 编码。如果一个字符串对象保存的是整数值，并且可以用 long 类型来表示，则将字符串对象转为 long，设置编码类型为 OBJ_ENCODING_INT。
+- Set：使用 OBJ_ENCODING_INTSET 的条件：
+
+  - 集合对象中所有元素都是整数值。
+  - 集合对象保存的元素个数不超过 512 个。（可通过 redis.conf 配置：set_max_intset_entries）
+
+- ZSet：使用 OBJ_ENCODING_ZIPLIST 的条件：
+
+  - 有序集合对象中所有元素的大小都小于 64 字节。（可通过 redis.conf 配置：zset_max_ziplist_value）
+  - 有序集合对象保存的元素个数不超过 128 个。（可通过 redis.conf 配置：zset_max_ziplist_entries）
+
+- Hash：使用 OBJ_ENCODING_ZIPLIST 的条件：
+
+  - hash 对象保存的键值对的键和值的字符串长度小于 64 字节（可通过 redis.conf 配置：hash_max_ziplist_value）
+  - hash 对象保存的键值对数小于 512 个（可通过 redis.conf 配置：hash_max_ziplist_entries）
+
+<h3 id="4">Redis 的 ZSet 为什么用跳跃表不用红黑树</h3>
+
+---
+
+| 区别     | 跳跃表                           | 红黑树   |
+| -------- | -------------------------------- | -------- |
+| 内存     | 大（每个数据都需要维护多层指针） | 小       |
+| 效率     | O(logn)                          | O(logn)  |
+| 存储方式 | 有序存储                         | 无序存储 |
+
+因为 ZSet 需要支持范围查询，所以使用跳跃表。
+
+<h3 id="5">Redis 的持久化方式及区别</h3>
+
+---
+
+Redis 支持两种持久化方式：AOF 和 RDB（默认）。
+
+- AOF：通过保存 Redis 所执行的写命令来记录数据库状态的。
+- RDB：在指定的时间间隔内将内存中的数据集快照写入到二进制文件中，Redis 会派生出一个子进程，然后由子进程负责创建 RDB 文件并写入，父进程继续处理命令请求。
+
+区别：
+
+- RDB 是一个紧凑压缩的二进制文件，代表 Redis 在某个时间点上的数据备份。非常适合备份，全量复制等场景。比如每 6 小时执行 bgsave 备份，并把 RDB 文件拷贝到远程机器或者文件系统中，用于灾难恢复。
+- Redis 加载 RDB 恢复数据远远快于 AOF 的方式。
+- RDB 方式数据没办法做到实时持久化，而 AOF 方式可以做到。
+
+<h3 id="6">Redis 是多线程还是单线程架构</h3>
+
+---
+
+单线程。
+
+<h3 id="7">Redis 为什么这么快</h3>
+
+---
+
+- 完全基于内存，绝大部分请求是纯粹的内存操作，非常快速。
+- 数据结构简单，对数据操作也简单，Redis 中的数据结构是专门进行设计的。
+- 采用单线程，避免了不必要的上下文切换和竞争条件，也不存在多进程或者多线程导致的切换而消耗 CPU，不用去考虑各种锁的问题，不存在加锁释放锁操作。
+- 使用多路 I/O 复用模型，非阻塞 IO。
